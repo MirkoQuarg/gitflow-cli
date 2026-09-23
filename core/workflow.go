@@ -6,8 +6,11 @@ SPDX-License-Identifier: MIT
 package core
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 )
 
 func pushIfEnabled(fn func() error) error {
@@ -332,7 +335,7 @@ func releaseFinish(plugin Plugin, repository Repository) error {
 
 	// merge release branch into current production branch (with merge commit --no-ff git flag)
 	if err := repository.MergeBranch(releaseVersion.BranchName(Release), NoFastForward); err != nil {
-		if err := handleVersionFileMergeConflict(plugin, repository, Theirs); err != nil {
+		if err := handleVersionFileMergeConflict(plugin, repository, Theirs, err); err != nil {
 			return err
 		}
 	}
@@ -445,7 +448,7 @@ func hotfixFinish(plugin Plugin, repository Repository) error {
 
 		// merge hotfix branch into current release branch (with merge commit --no-ff git flag)
 		if err := repository.MergeBranch(hotfixVersion.BranchName(Hotfix), NoFastForward); err != nil {
-			if err := handleVersionFileMergeConflict(plugin, repository, Ours); err != nil {
+			if err := handleVersionFileMergeConflict(plugin, repository, Ours, err); err != nil {
 				return err
 			}
 		}
@@ -458,7 +461,7 @@ func hotfixFinish(plugin Plugin, repository Repository) error {
 
 	// merge hotfix branch into current develop branch
 	if err := repository.MergeBranch(hotfixVersion.BranchName(Hotfix), NoFastForward); err != nil {
-		if err := handleVersionFileMergeConflict(plugin, repository, Ours); err != nil {
+		if err := handleVersionFileMergeConflict(plugin, repository, Ours, err); err != nil {
 			return err
 		}
 	}
@@ -490,9 +493,11 @@ func hotfixFinish(plugin Plugin, repository Repository) error {
 	return nil
 }
 
-// handleVersionFileMergeConflict handles merge conflicts when only the version file has conflicts
-// using the specified strategy (Ours or Theirs)
-func handleVersionFileMergeConflict(plugin Plugin, repository Repository, strategy CheckoutStrategy) error {
+// handleVersionFileMergeConflict resolves a merge that failed on the version
+// file alone, using the specified strategy (Ours or Theirs). Anything else is
+// returned as an error: cause is the failure of the merge that led here, and
+// it is reported when the conflict is not one this function may decide.
+func handleVersionFileMergeConflict(plugin Plugin, repository Repository, strategy CheckoutStrategy, cause error) error {
 	mergeConflictsMap, err := repository.GetMergeConflicts()
 	if err != nil {
 		return repository.Rollback(err)
@@ -514,5 +519,22 @@ func handleVersionFileMergeConflict(plugin Plugin, repository Repository, strate
 		return nil
 	}
 
-	return err
+	// Only an isolated conflict in the version file can be decided without
+	// asking anyone. Everything else has to be resolved by hand, and carrying
+	// on would build the rest of the workflow on a conflicted tree.
+	if len(mergeConflictsMap) == 0 {
+		return repository.Rollback(cause)
+	}
+
+	conflicted := make([]string, 0, len(mergeConflictsMap))
+	for fileName := range mergeConflictsMap {
+		conflicted = append(conflicted, fileName)
+	}
+	sort.Strings(conflicted)
+
+	return repository.Rollback(errors.Join(cause, fmt.Errorf(
+		"merge conflict in %v, which cannot be resolved automatically:"+
+			" only a conflict in the version file '%v' alone can be,"+
+			" so resolve these by hand and run the command again",
+		strings.Join(conflicted, ", "), plugin.VersionFileName())))
 }

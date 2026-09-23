@@ -3,3 +3,4 @@ branches:
   development: custom-develop
   release: custom-release
   hotfix: custom-hotfix
+  feature: custom-feature

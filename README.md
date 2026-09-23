@@ -34,6 +34,49 @@ From within the project directory the **gitflow-cli** can be built, run and inst
 Before using **gitflow-cli**, either navigate to your target Git repository or specify it with the `--path` flag.
 Make sure the repository meets all [preconditions](#preconditions).
 
+### Feature
+
+Feature branches are where the work happens. They branch off `develop` and merge back into it,
+so a feature that is not finished in time simply stays out of the next release.
+
+To start a new feature, pass its name:
+
+   ```bash
+   gitflow-cli feature start 142-book-a-service-appointment
+   ```
+
+Feature start will perform the following steps:
+
+* Pull the `develop` branch, so the feature does not start from a stale state
+* Create and check out a feature branch from `develop` (e.g., `feature/142-book-a-service-appointment`)
+* Push that branch, and only that branch
+
+The name is the part after the prefix. Passing the prefix as well (`feature/142-...`) is accepted and
+not doubled, and a name that would shadow a long-lived branch or another workflow's prefix
+(`main`, `develop`, `release/...`, `hotfix/...`) is rejected.
+
+Once the feature is ready, finish it with:
+
+   ```bash
+   gitflow-cli feature finish
+   ```
+
+Feature finish will perform the following steps:
+* Merge the feature branch into `develop` with a merge commit, so the individual commits of the
+  feature stay visible in the history
+* Delete the feature branch locally and on the remote
+* Push `develop`
+
+Without an argument the feature branch that is currently checked out is finished. Naming it
+explicitly (`gitflow-cli feature finish 142-book-a-service-appointment`) picks a specific one.
+
+A feature branch never carries a version: the version is only moved by the release and hotfix
+workflows. Nothing here touches the version file, so the feature commands need no build tool and no
+Docker, only `git`.
+
+Note that `feature finish` merges locally. Where changes reach `develop` through a reviewed merge
+request, use the merge request instead of this command.
+
 ### Release
 
 To initiate a new release, use the following command:
@@ -95,7 +138,7 @@ To use **gitflow-cli**, ensure your project meets the basic structural requireme
 
 ### Prerequisites
 
-- **git** — required for all operations
+- **git** — required for all operations, and the only requirement for the feature workflow
 
 - **Native Mode** (`--native-mode`, default)
   - The respective build tool (e.g., `mvn`, `npm`, `composer`, `toml`) must be installed and available in PATH.
@@ -141,6 +184,7 @@ branches:
   development: develop   # Name of the development branch
   release: release       # Prefix for release branches
   hotfix: hotfix         # Prefix for hotfix branches
+  feature: feature       # Prefix for feature branches
 
 workflow:
   push: true             # Push changes to remote after workflow completes

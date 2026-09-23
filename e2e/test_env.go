@@ -215,8 +215,11 @@ func (env *GitTestEnv) CommitFile(name string, content []byte, commitRef string)
 
 	env.ExecuteGit("checkout", commitRef)
 
-	// Create file with content
+	// Create file with content, including the directories it sits in, so a
+	// version file below the repository root can be committed as well
 	path := filepath.Join(env.LocalPath, name)
+	require.NoError(env.t, os.MkdirAll(filepath.Dir(path), 0755),
+		"Failed to create directory for: %s", path)
 	err := os.WriteFile(path, content, 0644)
 	require.NoError(env.t, err, "Failed to create file: %s", path)
 
@@ -226,6 +229,15 @@ func (env *GitTestEnv) CommitFile(name string, content []byte, commitRef string)
 	env.ExecuteGit("add", path)
 	env.ExecuteGit("commit", "-m", message)
 	env.ExecuteGit("push", "-u", "origin", commitRef)
+}
+
+// WriteWorkingFile writes a file into the working tree without committing or
+// pushing it. Use it when a test needs a commit that stays local.
+func (env *GitTestEnv) WriteWorkingFile(name string, content []byte) {
+	env.t.Helper()
+
+	path := filepath.Join(env.LocalPath, name)
+	require.NoError(env.t, os.WriteFile(path, content, 0644), "Failed to create file: %s", path)
 }
 
 // CreateBranch creates a new branch from the specified base branch

@@ -7,6 +7,7 @@ package workflow
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mercedes-benz/gitflow-cli/core"
@@ -391,4 +392,61 @@ func RunHotfixStartDuplicateHotfix(t *testing.T) {
 	errMsg := env.ExecuteGitflowExpectError("hotfix", "start")
 
 	assert.Contains(t, errMsg, "already has")
+}
+
+// --- Merge conflict tests ---
+
+// RunReleaseFinishForeignConflict asserts that a conflict in anything but the
+// version file stops the workflow. Only an isolated version file conflict can
+// be decided without asking anyone; carrying on would build the merge, the tag
+// and the back-merge on top of a conflicted tree.
+func RunReleaseFinishForeignConflict(t *testing.T) {
+	t.Helper()
+	env := e2e.SetupTestEnv(t)
+
+	env.CommitTemplateContent("{{.Version}}", "version.txt", "1.0.0", "main")
+	env.CommitTemplateContent("{{.Version}}", "version.txt", "1.1.0-dev", "develop")
+
+	// a file both branches introduce differently, so that merging the release
+	// into the production branch conflicts in more than the version file
+	env.CommitFile("notes.txt", []byte("from the production branch\n"), "main")
+	env.CommitFile("notes.txt", []byte("from the development branch\n"), "develop")
+
+	env.ExecuteGitflow("release", "start")
+
+	errMsg := env.ExecuteGitflowExpectError("release", "finish")
+
+	assert.Contains(t, errMsg, "notes.txt")
+	assert.Contains(t, errMsg, "cannot be resolved automatically")
+
+	// the workflow stopped at the merge, so the release was never tagged
+	_, err := env.ExecuteGitAllowError("rev-parse", "--verify", "1.1.0")
+	assert.Error(t, err, "the release must not have been tagged")
+}
+
+// RunHotfixFinishVersionFileInSubdirectory asserts that the workflow also
+// works when --path points at a subdirectory of the repository rather than at
+// its root. Git names a conflicting file relative to the repository root,
+// which is not how the plugin names its version file, and the back-merge of a
+// hotfix into the development branch always conflicts in that file.
+func RunHotfixFinishVersionFileInSubdirectory(t *testing.T) {
+	t.Helper()
+	env := e2e.SetupTestEnv(t)
+
+	env.CommitTemplateContent("{{.Version}}", "app/version.txt", "1.0.0", "main")
+	env.CommitTemplateContent("{{.Version}}", "app/version.txt", "1.1.0-dev", "develop")
+
+	// the last --path wins, so the project path becomes the subdirectory
+	projectPath := filepath.Join(env.LocalPath, "app")
+
+	env.ExecuteGitflow("--path", projectPath, "hotfix", "start")
+	env.ExecuteGitflow("--path", projectPath, "hotfix", "finish")
+
+	// the hotfix is released on the production branch and tagged
+	env.AssertTagEquals("1.0.1", "main")
+	env.AssertTemplateVersionEquals("{{.Version}}", "app/version.txt", "1.0.1", "main")
+
+	// the development version survives the back-merge unchanged
+	env.AssertTemplateVersionEquals("{{.Version}}", "app/version.txt", "1.1.0-dev", "develop")
+	env.AssertBranchDoesNotExist("hotfix/1.0.1")
 }

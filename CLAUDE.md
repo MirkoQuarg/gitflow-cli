@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workflow Behavior
 
-See [README.md](README.md) for the complete user-facing documentation: workflow steps (release start/finish, hotfix start/finish), CLI flags (`--no-push`, `--docker-mode`, `--native-mode`, `--yes`), configuration keys, and plugin execution modes. When modifying workflow logic, always verify that the README still accurately describes the behavior.
+See [README.md](README.md) for the complete user-facing documentation: workflow steps (feature start/finish, release start/finish, hotfix start/finish), CLI flags (`--no-push`, `--docker-mode`, `--native-mode`, `--yes`), configuration keys, and plugin execution modes. When modifying workflow logic, always verify that the README still accurately describes the behavior.
 
 ## Build & Run
 
@@ -56,6 +56,11 @@ When adding cross-cutting functionality, always ask: "Can the plugin register it
 
 `main.go` → `cmd/root.go` (Cobra commands) → `core.Start()`/`core.Finish()` → plugin detection → workflow execution (branch, merge, tag, push).
 
+The feature workflow is separate: `core.StartFeature()`/`core.FinishFeature()` in `core/feature.go`
+skip plugin detection entirely, because a feature branch never touches the version file. They
+therefore require no build tool and no Docker. Its e2e tests live in `cmd/feature_test.go` rather
+than under a plugin, for the same reason.
+
 ### Plugin system
 
 Plugins implement `core.Plugin` interface (ReadVersion, WriteVersion, VersionFileName, VersionQualifier, RequiredTools). They self-register via `init()` functions using `core.RegisterPlugin()`.
@@ -86,6 +91,13 @@ Each plugin is self-contained in `plugin/<name>/`:
 - Each plugin's `_test.go` imports `e2e/workflow` and calls the shared functions with its own `TestConfig`
 - Fallback tests (no-plugin behavior) live in `plugin/standard/standard_test.go` (the standard plugin IS the fallback)
 - Configuration tests (custom branch names) live in `cmd/root_test.go`
+
+Version-related state (`workflow.push`, `workflow.rollback`, `workflow.docker-fallback`) is reset to
+its default at the top of `applySettings()`, and the `--no-push` flag goes through
+`core.PushOverride` instead of `viper.Set`. Both exist because `cmd.Execute()` is called repeatedly
+in one process by the e2e tests: Cobra keeps flag values on its singleton command, and a Viper
+override outlives the run that set it. `Execute()` restores the persistent flags to their defaults
+before parsing for the same reason.
 
 ### Hook system
 

@@ -31,8 +31,11 @@ type (
 	Repository interface {
 		Local() string
 		IsClean() error
+		CurrentBranch() (string, error)
+		CheckRefFormat(branchName string) error
 		HasBranch(branch Branch) (bool, []string, error)
 		CheckoutBranch(branchName string) error
+		AbortMerge() error
 		CheckoutFile(fileName string, strategy CheckoutStrategy) error
 		ContinueMerge() error
 		GetMergeConflicts() (map[string][]ConflictMap, error)
@@ -40,6 +43,7 @@ type (
 		MergeBranch(branchName string, mergeType MergeType) error
 		PullBranch(branchName string) error
 		DeleteBranch(branchName string) error
+		ForceDeleteBranch(branchName string) error
 		AddFile(file string) error
 		CommitChanges(message string) error
 		TagCommit(tagName string) error
@@ -58,6 +62,11 @@ type (
 type repository struct {
 	projectPath, remote string
 	statusClean         []string
+	currentBranch       []string
+	checkRefFormat      []string
+	repositoryRoot      []string
+	projectPrefix       []string
+	abortMerge          []string
 	fetchAll            []string
 	allRemotes          []string
 	allLocals           []string
@@ -84,6 +93,11 @@ func NewRepository(projectPath, remote string) Repository {
 		projectPath:       projectPath,
 		remote:            remote,
 		statusClean:       []string{status, porcelain},
+		currentBranch:     []string{revparse, abbrevref, head},
+		checkRefFormat:    []string{checkrefformat},
+		repositoryRoot:    []string{revparse, showtoplevel},
+		projectPrefix:     []string{revparse, showprefix},
+		abortMerge:        []string{merge, abort},
 		fetchAll:          []string{fetch, all, prune},
 		allRemotes:        []string{branch, remotes},
 		allLocals:         []string{branch},
@@ -110,8 +124,76 @@ func (r *repository) Local() string {
 	return r.projectPath
 }
 
+// CurrentBranch Return the name of the branch that is currently checked out.
+func (r *repository) CurrentBranch() (string, error) {
+	var err error
+	var current *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(current, output, err) }()
+
+	// ask git for the symbolic name of HEAD
+	current = exec.Command(Git, r.currentBranch...)
+	current.Dir = r.projectPath
+
+	// run git command to get the current branch
+	if output, err = current.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git '%v' failed with %v: %s", current, err, output)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// CheckRefFormat Let git decide whether a branch name is usable.
+func (r *repository) CheckRefFormat(branchName string) error {
+	var err error
+	var check *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(check, output, err) }()
+
+	// git validates the fully qualified reference, not the short name
+	check = exec.Command(Git, append(r.checkRefFormat, "refs/heads/"+branchName)...)
+	check.Dir = r.projectPath
+
+	// run git command to validate the branch name
+	if output, err = check.CombinedOutput(); err != nil {
+		return fmt.Errorf("'%v' is not a valid branch name: %v %s", branchName, err, output)
+	}
+
+	return nil
+}
+
+// AbortMerge Abort a merge that is in progress, leaving the branches untouched.
+func (r *repository) AbortMerge() error {
+	var err error
+	var abort *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(abort, output, err) }()
+
+	// abort the merge in progress
+	abort = exec.Command(Git, r.abortMerge...)
+	abort.Dir = r.projectPath
+
+	// run git command to abort the merge
+	if output, err = abort.CombinedOutput(); err != nil {
+		return fmt.Errorf("git '%v' failed with %v: %s", abort, err, output)
+	}
+
+	return nil
+}
+
 // GetMergeConflicts checks all files for merge conflicts and returns a map of files to their conflicts.
 // Each file with conflicts has an entry in the map with a slice of all conflicts found in that file.
+//
+// The keys are named the way the project path sees them, which is how plugins
+// name their version file. Git reports the paths relative to the repository
+// root instead, and the two differ whenever the project path is a
+// subdirectory of the repository.
 func (r *repository) GetMergeConflicts() (map[string][]ConflictMap, error) {
 	conflicts := make(map[string][]ConflictMap)
 
@@ -127,16 +209,28 @@ func (r *repository) GetMergeConflicts() (map[string][]ConflictMap, error) {
 	// Split the output and trim the result to get clean file names
 	filesWithConflicts := strings.Split(strings.TrimSpace(string(output)), "\n")
 
-	// Handle the case where there are no conflicts
-	if len(filesWithConflicts) == 0 {
-		return conflicts, nil
+	// the paths above are relative to the repository root, so both the root
+	// itself and the position of the project path inside it are needed
+	root, err := r.repoRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	prefix, err := r.pathPrefix()
+	if err != nil {
+		return nil, err
 	}
 
 	// Process each file with conflicts
 	for _, fileName := range filesWithConflicts {
 
-		// Read the file content
-		filePath := filepath.Join(r.projectPath, fileName)
+		// an empty output leaves one empty field behind, which is not a file
+		if fileName == "" {
+			continue
+		}
+
+		// Read the file content from the repository root
+		filePath := filepath.Join(root, fileName)
 		fileContent, err := os.ReadFile(filePath)
 		if err != nil {
 			return nil, err
@@ -145,11 +239,75 @@ func (r *repository) GetMergeConflicts() (map[string][]ConflictMap, error) {
 		// Parse conflicts in the current file
 		fileConflicts := parseConflicts(fileContent)
 		if len(fileConflicts) > 0 {
-			conflicts[fileName] = fileConflicts
+			conflicts[relativeToPrefix(prefix, fileName)] = fileConflicts
 		}
 	}
 
 	return conflicts, nil
+}
+
+// repoRoot returns the absolute path of the root of the working tree that the
+// project path belongs to.
+func (r *repository) repoRoot() (string, error) {
+	var err error
+	var root *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(root, output, err) }()
+
+	// ask git for the root of the working tree
+	root = exec.Command(Git, r.repositoryRoot...)
+	root.Dir = r.projectPath
+
+	// run git command to get the repository root
+	if output, err = root.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git '%v' failed with %v: %s", root, err, output)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// pathPrefix returns the position of the project path inside the repository,
+// with a trailing slash, or an empty string when the project path is the
+// repository root itself.
+func (r *repository) pathPrefix() (string, error) {
+	var err error
+	var prefix *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(prefix, output, err) }()
+
+	// ask git where the project path sits inside the repository
+	prefix = exec.Command(Git, r.projectPrefix...)
+	prefix.Dir = r.projectPath
+
+	// run git command to get the prefix
+	if output, err = prefix.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git '%v' failed with %v: %s", prefix, err, output)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// relativeToPrefix renames a path that is relative to the repository root so
+// that it is relative to the project path, whose own position inside the
+// repository is prefix (with a trailing slash, empty for the root).
+//
+// A file outside the project path climbs out of it, which keeps it from ever
+// matching a plugin's version file name: such a conflict is not the one that
+// can be resolved automatically.
+func relativeToPrefix(prefix, fileName string) string {
+	if prefix == "" {
+		return fileName
+	}
+
+	if relative, found := strings.CutPrefix(fileName, prefix); found {
+		return relative
+	}
+
+	return strings.Repeat("../", strings.Count(prefix, "/")) + fileName
 }
 
 // Helper function to parse conflicts in a file's content
@@ -432,6 +590,30 @@ func (r *repository) DeleteBranch(branchName string) error {
 	return nil
 }
 
+// ForceDeleteBranch Delete a local branch regardless of its upstream.
+// 'git branch --delete' compares the branch against its upstream, so a branch
+// with commits that were never pushed cannot be deleted that way even when its
+// content has already been merged somewhere else.
+func (r *repository) ForceDeleteBranch(branchName string) error {
+	var err error
+	var delete *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(delete, output, err) }()
+
+	// force delete the branch with the specific name
+	delete = exec.Command(Git, append(r.forceDeleteBranch, branchName)...)
+	delete.Dir = r.projectPath
+
+	// run git command to delete the branch
+	if output, err = delete.CombinedOutput(); err != nil {
+		return fmt.Errorf("git force delete '%v' failed with %v: %s", branchName, err, output)
+	}
+
+	return nil
+}
+
 func (r *repository) WriteFile(fileName string, fileContent string) error {
 	filePath := filepath.Join(r.projectPath, fileName)
 	if err := os.WriteFile(filePath, []byte(fileContent), 0644); err != nil {
@@ -708,8 +890,16 @@ func (r *repository) CompareFiles(sourceBranch, targetBranch, sourceFile, target
 	// log human-readable description of the git command
 	defer func() { Log(diff, output, err) }()
 
+	// '<revision>:<path>' resolves the path from the repository root and not
+	// from the working directory, so the position of the project path inside
+	// the repository has to be prepended
+	prefix, err := r.pathPrefix()
+	if err != nil {
+		return false, err
+	}
+
 	// Execute git diff to compare the files
-	diff = exec.Command(Git, "diff", "--quiet", fmt.Sprintf("%s:%s", sourceBranch, sourceFile), fmt.Sprintf("%s:%s", targetBranch, targetFile))
+	diff = exec.Command(Git, "diff", "--quiet", fmt.Sprintf("%s:%s", sourceBranch, prefix+sourceFile), fmt.Sprintf("%s:%s", targetBranch, prefix+targetFile))
 	diff.Dir = r.projectPath
 
 	// If exit code is 0, it means no differences (identical content)

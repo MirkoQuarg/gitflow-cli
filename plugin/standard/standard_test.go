@@ -137,3 +137,13 @@ func TestReleaseStartDuplicateRelease(t *testing.T) {
 func TestHotfixStartDuplicateHotfix(t *testing.T) {
 	workflow.RunHotfixStartDuplicateHotfix(t)
 }
+
+// --- Merge conflict tests ---
+
+func TestReleaseFinishForeignConflict(t *testing.T) {
+	workflow.RunReleaseFinishForeignConflict(t)
+}
+
+func TestHotfixFinishVersionFileInSubdirectory(t *testing.T) {
+	workflow.RunHotfixFinishVersionFileInSubdirectory(t)
+}

@@ -30,6 +30,7 @@ func TestInitDefaultConfig_CreatesFileWhenMissing(t *testing.T) {
 	assert.Contains(t, string(content), "development: develop")
 	assert.Contains(t, string(content), "release: release")
 	assert.Contains(t, string(content), "hotfix: hotfix")
+	assert.Contains(t, string(content), "feature: feature")
 	assert.Contains(t, string(content), "push: true")
 	assert.Contains(t, string(content), "rollback: false")
 	assert.Contains(t, string(content), "docker-fallback: true")

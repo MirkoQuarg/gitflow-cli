@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mercedes-benz/gitflow-cli/cmd/feature"
 	"github.com/mercedes-benz/gitflow-cli/cmd/hotfix"
 	"github.com/mercedes-benz/gitflow-cli/cmd/release"
 	"github.com/mercedes-benz/gitflow-cli/core"
 	"github.com/mercedes-benz/gitflow-cli/core/plugin"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -29,6 +31,15 @@ var rootCmd = &cobra.Command{
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() error {
+	// Cobra keeps flag values on the command, and the command is a package level
+	// singleton. When Execute is called more than once in one process, a flag of
+	// an earlier call would still be set, so restore the defaults before the
+	// arguments are parsed again.
+	rootCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+
 	return rootCmd.Execute()
 }
 
@@ -44,7 +55,7 @@ func init() {
 	initPrompts()
 
 	// add subcommands to the root command
-	rootCmd.AddCommand(release.ReleaseCmd, hotfix.HotfixCmd)
+	rootCmd.AddCommand(release.ReleaseCmd, hotfix.HotfixCmd, feature.FeatureCmd)
 
 	// persistent flags, which, if defined here, will be global for the application
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default is $HOME/.gitflow-cli.yaml)")
@@ -62,10 +73,16 @@ func initConfiguration() {
 		plugin.ExecutorModeOverride = plugin.ModeDocker
 	} else if native, _ := rootCmd.Flags().GetBool("native-mode"); native {
 		plugin.ExecutorModeOverride = plugin.ModeNative
+	} else {
+		// neither flag given: drop an override of an earlier run in this process
+		plugin.ExecutorModeOverride = ""
 	}
 
 	if noPush, _ := rootCmd.Flags().GetBool("no-push"); noPush {
-		viper.Set("workflow.push", false)
+		push := false
+		core.PushOverride = &push
+	} else {
+		core.PushOverride = nil
 	}
 
 	if cfgFile != "" {
@@ -102,6 +119,7 @@ const defaultConfig = `branches:
   development: develop
   release: release
   hotfix: hotfix
+  feature: feature
 
 workflow:
   push: true

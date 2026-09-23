@@ -29,6 +29,7 @@ const (
 	Development
 	Release
 	Hotfix
+	Feature
 )
 
 // Merge types for repository merging operations.
@@ -95,35 +96,42 @@ const dockerFallbackSetting = "docker-fallback"
 
 // Git version control system tool commands.
 const (
-	status        = "status"
-	fetch         = "fetch"
-	pull          = "pull"
-	switch_       = "switch"
-	merge         = "merge"
-	add           = "add"
-	commit        = "commit"
-	branch        = "branch"
-	tag           = "tag"
-	push          = "push"
-	clean         = "clean"
-	reset         = "reset"
-	create        = "-c"
-	forcedelete   = "-D"
-	dir           = "-d"
-	ignored       = "-x"
-	porcelain     = "--porcelain"
-	upstream      = "--set-upstream"
-	all           = "--all"
-	tags          = "--tags"
-	prune         = "--prune"
-	delete        = "--delete"
-	remotes       = "--remotes"
-	message       = "--message"
-	squash        = "--squash"
-	nofastforward = "--no-ff"
-	fastforwad    = "--ff-only"
-	force         = "--force"
-	hard          = "--hard"
+	status         = "status"
+	revparse       = "rev-parse"
+	checkrefformat = "check-ref-format"
+	head           = "HEAD"
+	abbrevref      = "--abbrev-ref"
+	showtoplevel   = "--show-toplevel"
+	showprefix     = "--show-prefix"
+	abort          = "--abort"
+	fetch          = "fetch"
+	pull           = "pull"
+	switch_        = "switch"
+	merge          = "merge"
+	add            = "add"
+	commit         = "commit"
+	branch         = "branch"
+	tag            = "tag"
+	push           = "push"
+	clean          = "clean"
+	reset          = "reset"
+	create         = "-c"
+	forcedelete    = "-D"
+	dir            = "-d"
+	ignored        = "-x"
+	porcelain      = "--porcelain"
+	upstream       = "--set-upstream"
+	all            = "--all"
+	tags           = "--tags"
+	prune          = "--prune"
+	delete         = "--delete"
+	remotes        = "--remotes"
+	message        = "--message"
+	squash         = "--squash"
+	nofastforward  = "--no-ff"
+	fastforwad     = "--ff-only"
+	force          = "--force"
+	hard           = "--hard"
 )
 
 // BranchNames maps branch types to their names.
@@ -132,6 +140,7 @@ var branchNames = map[Branch]string{
 	Development: "develop",
 	Release:     "release",
 	Hotfix:      "hotfix",
+	Feature:     "feature",
 }
 
 // BranchSettings maps settings to branch names.
@@ -140,10 +149,18 @@ var branchSettings = map[string]Branch{
 	"development": Development,
 	"release":     Release,
 	"hotfix":      Hotfix,
+	"feature":     Feature,
 }
 
 var rollbackChanges = false
 var pushChanges = true
+
+// PushOverride overrides the configured 'workflow.push' setting while it is set.
+// The --no-push command line flag sets it; nil leaves the decision to the
+// configuration. It is a separate variable rather than a Viper override so that
+// a flag from one run cannot outlive it, which matters when the CLI is executed
+// repeatedly in one process.
+var PushOverride *bool
 
 // DockerFallback indicates whether to automatically fall back to Docker when a native tool is missing.
 var DockerFallback = false
@@ -213,6 +230,7 @@ func ResetBranchNames() {
 	branchNames[Development] = "develop"
 	branchNames[Release] = "release"
 	branchNames[Hotfix] = "hotfix"
+	branchNames[Feature] = "feature"
 }
 
 // branchConfigKeys maps Branch constants to their config key names.
@@ -221,6 +239,7 @@ var branchConfigKeys = map[Branch]string{
 	Development: "development",
 	Release:     "release",
 	Hotfix:      "hotfix",
+	Feature:     "feature",
 }
 
 // ConfigKey returns the config key name for this branch type.
@@ -230,6 +249,12 @@ func (b Branch) ConfigKey() string {
 
 // Apply suitable settings from the global configuration to the core package.
 func applySettings() {
+	// start from the defaults, so settings of an earlier run in the same process
+	// cannot leak into this one
+	rollbackChanges = false
+	pushChanges = true
+	DockerFallback = false
+
 	all := viper.AllSettings()
 
 	if branches, ok := all[branchesGroup].(map[string]any); ok {
@@ -250,6 +275,11 @@ func applySettings() {
 		if v, ok := legacy[loggingSetting].(string); ok {
 			applyLoggingSettings(v)
 		}
+	}
+
+	// the command line wins over the configuration file
+	if PushOverride != nil {
+		pushChanges = *PushOverride
 	}
 }
 

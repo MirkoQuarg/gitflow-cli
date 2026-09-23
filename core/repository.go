@@ -167,7 +167,14 @@ func (r *repository) CheckRefFormat(branchName string) error {
 
 	// run git command to validate the branch name
 	if output, err = check.CombinedOutput(); err != nil {
-		return fmt.Errorf("'%v' is not a valid branch name: %v %s", branchName, err, output)
+		// git rejects an invalid name silently with exit status 1, so there is
+		// nothing to add; anything else means git itself failed
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return fmt.Errorf("'%v' is not a valid branch name", branchName)
+		}
+
+		return fmt.Errorf("git '%v' failed with %v: %s", check, err, output)
 	}
 
 	return nil

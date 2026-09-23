@@ -213,6 +213,16 @@ func (env *GitTestEnv) CommitTemplateContent(templateContent, fileName, version,
 func (env *GitTestEnv) CommitFile(name string, content []byte, commitRef string) {
 	env.t.Helper()
 
+	env.CommitFileWithoutPush(name, content, commitRef)
+	env.ExecuteGit("push", "-u", "origin", commitRef)
+}
+
+// CommitFileWithoutPush creates a file with the specified content in the
+// repository and commits it, but does not push it. Use it when a test needs a
+// commit that stays local.
+func (env *GitTestEnv) CommitFileWithoutPush(name string, content []byte, commitRef string) {
+	env.t.Helper()
+
 	env.ExecuteGit("checkout", commitRef)
 
 	// Create file with content, including the directories it sits in, so a
@@ -228,7 +238,6 @@ func (env *GitTestEnv) CommitFile(name string, content []byte, commitRef string)
 
 	env.ExecuteGit("add", path)
 	env.ExecuteGit("commit", "-m", message)
-	env.ExecuteGit("push", "-u", "origin", commitRef)
 }
 
 // CommitFileAsColleague commits a file to a branch from a second clone of the
@@ -238,36 +247,12 @@ func (env *GitTestEnv) CommitFileAsColleague(name string, content []byte, branch
 	env.t.Helper()
 
 	clonePath := filepath.Join(env.t.TempDir(), "colleague")
+	env.ExecuteGit("clone", "--branch", branch, env.RemotePath, clonePath)
 
-	colleague := func(args ...string) {
-		env.t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = clonePath
-		output, err := cmd.CombinedOutput()
-		require.NoError(env.t, err, "Git command failed: git %s\nOutput: %s", strings.Join(args, " "), output)
-	}
-
-	cmd := exec.Command("git", "clone", "--branch", branch, env.RemotePath, clonePath)
-	output, err := cmd.CombinedOutput()
-	require.NoError(env.t, err, "Failed to clone remote: %s", output)
-
-	colleague("config", "user.name", "Colleague")
-	colleague("config", "user.email", "noreply@mercedes-benz.com")
-
-	require.NoError(env.t, os.WriteFile(filepath.Join(clonePath, name), content, 0644))
-
-	colleague("add", name)
-	colleague("commit", "-m", fmt.Sprintf("Commit of a colleague on %s branch", branch))
-	colleague("push", "origin", branch)
-}
-
-// WriteWorkingFile writes a file into the working tree without committing or
-// pushing it. Use it when a test needs a commit that stays local.
-func (env *GitTestEnv) WriteWorkingFile(name string, content []byte) {
-	env.t.Helper()
-
-	path := filepath.Join(env.LocalPath, name)
-	require.NoError(env.t, os.WriteFile(path, content, 0644), "Failed to create file: %s", path)
+	colleague := &GitTestEnv{LocalPath: clonePath, RemotePath: env.RemotePath, t: env.t}
+	colleague.ExecuteGit("config", "user.name", "Colleague")
+	colleague.ExecuteGit("config", "user.email", "noreply@mercedes-benz.com")
+	colleague.CommitFile(name, content, branch)
 }
 
 // CreateBranch creates a new branch from the specified base branch

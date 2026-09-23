@@ -147,9 +147,7 @@ func TestFeatureFinishOfALocalOnlyBranch(t *testing.T) {
 	env.ExecuteGitflow("feature", "start", featureName, "--no-push")
 
 	// commit without pushing, so the branch stays local
-	env.WriteWorkingFile("feature.txt", []byte("the work\n"))
-	env.ExecuteGit("add", "feature.txt")
-	env.ExecuteGit("commit", "-m", "feat: the work")
+	env.CommitFileWithoutPush("feature.txt", []byte("the work\n"), branch)
 	env.AssertBranchNotOnRemote(branch)
 
 	env.ExecuteGitflow("feature", "finish", featureName)
@@ -209,9 +207,7 @@ func TestFeatureStartWithDivergedDevelop(t *testing.T) {
 
 			// a feature finished without pushing leaves a merge commit on the local develop
 			env.ExecuteGitflow("feature", "start", "160-local", "--no-push")
-			env.WriteWorkingFile("local.txt", []byte("local work\n"))
-			env.ExecuteGit("add", "local.txt")
-			env.ExecuteGit("commit", "-m", "feat: local work")
+			env.CommitFileWithoutPush("local.txt", []byte("local work\n"), "feature/160-local")
 			env.ExecuteGitflow("feature", "finish", "160-local", "--no-push")
 
 			// meanwhile the remote develop moves on
@@ -239,19 +235,30 @@ func TestFeatureFinishKeepsCommitsOfOthers(t *testing.T) {
 	env.CommitFile("feature.txt", []byte("the work\n"), branch)
 
 	// the local feature branch does not know about this commit
-	env.CommitFileAsColleague("colleague.txt", []byte("more work\n"), branch)
+	env.CommitFileAsColleague("docs/colleague.txt", []byte("more work\n"), branch)
 
 	env.ExecuteGitflow("feature", "finish", featureName)
 
-	content := env.ExecuteGit("show", "develop:colleague.txt")
+	content := env.ExecuteGit("show", "develop:docs/colleague.txt")
 	assert.Equal(t, "more work", strings.TrimSpace(content))
 
 	// the colleague's commit is also on the remote develop
 	env.ExecuteGit("fetch", "origin")
-	env.ExecuteGit("show", "origin/develop:colleague.txt")
+	env.ExecuteGit("show", "origin/develop:docs/colleague.txt")
 
 	env.AssertBranchDoesNotExist(branch)
 	env.AssertBranchDoesNotExist("origin/" + branch)
+}
+
+// TestFeatureStartRejectsAnInvalidName tests that git's verdict on the branch
+// name reaches the user as a plain message
+func TestFeatureStartRejectsAnInvalidName(t *testing.T) {
+	env := e2e.SetupTestEnv(t)
+
+	message := env.ExecuteGitflowExpectError("feature", "start", "foo..bar")
+
+	assert.Equal(t, "'feature/foo..bar' is not a valid branch name", message)
+	env.AssertCurrentBranchEquals("develop")
 }
 
 // TestFeatureWithConfigFile tests the feature workflow with a custom branch prefix

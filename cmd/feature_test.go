@@ -158,6 +158,102 @@ func TestFeatureFinishOfALocalOnlyBranch(t *testing.T) {
 	env.AssertBranchDoesNotExist(branch)
 }
 
+// TestFeatureStartRefusesALocalOnlyBranch tests that a feature branch that was
+// never pushed is not reused either, and that the refusal leaves it checked out
+func TestFeatureStartRefusesALocalOnlyBranch(t *testing.T) {
+	env := e2e.SetupTestEnv(t)
+	branch := "feature/" + featureName
+
+	env.ExecuteGitflow("feature", "start", featureName, "--no-push")
+	env.AssertBranchNotOnRemote(branch)
+
+	message := env.ExecuteGitflowExpectError("feature", "start", featureName)
+
+	assert.Contains(t, message, "already has a local '"+branch+"' branch")
+	env.AssertCurrentBranchEquals(branch)
+}
+
+// TestFeatureStartWithoutRemoteDevelop tests that a develop branch which only
+// exists locally, because it was created with pushing disabled, neither breaks
+// this run nor the next one
+func TestFeatureStartWithoutRemoteDevelop(t *testing.T) {
+	env := e2e.SetupTestEnvWithoutDevelop(t)
+
+	env.ExecuteGitflow("feature", "start", "150-first", "--no-push", "--yes")
+
+	env.AssertBranchNotOnRemote("develop")
+	env.AssertCurrentBranchEquals("feature/150-first")
+
+	// the next run finds develop only locally and publishes it
+	env.ExecuteGit("checkout", "main")
+	env.ExecuteGitflow("feature", "start", "151-second", "--yes")
+
+	env.AssertBranchExists("origin/develop")
+	env.AssertBranchExists("origin/feature/151-second")
+}
+
+// TestFeatureStartWithDivergedDevelop tests that a local develop with commits
+// of its own is brought up to date with the remote, whatever the git pull
+// configuration says, and that the merge commits of finished features survive
+func TestFeatureStartWithDivergedDevelop(t *testing.T) {
+	for name, config := range map[string][]string{
+		"default":     nil,
+		"pull.rebase": {"pull.rebase", "true"},
+		"pull.ff":     {"pull.ff", "only"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := e2e.SetupTestEnv(t)
+			if config != nil {
+				env.ExecuteGit("config", config[0], config[1])
+			}
+
+			// a feature finished without pushing leaves a merge commit on the local develop
+			env.ExecuteGitflow("feature", "start", "160-local", "--no-push")
+			env.WriteWorkingFile("local.txt", []byte("local work\n"))
+			env.ExecuteGit("add", "local.txt")
+			env.ExecuteGit("commit", "-m", "feat: local work")
+			env.ExecuteGitflow("feature", "finish", "160-local", "--no-push")
+
+			// meanwhile the remote develop moves on
+			env.CommitFileAsColleague("remote.txt", []byte("remote work\n"), "develop")
+
+			env.ExecuteGitflow("feature", "start", "161-next")
+
+			env.AssertCurrentBranchEquals("feature/161-next")
+			env.ExecuteGit("show", "feature/161-next:local.txt")
+			env.ExecuteGit("show", "feature/161-next:remote.txt")
+
+			merges := env.ExecuteGit("log", "--merges", "--format=%s", "develop")
+			assert.Contains(t, merges, "Merge branch 'feature/160-local' into develop")
+		})
+	}
+}
+
+// TestFeatureFinishKeepsCommitsOfOthers tests that commits a colleague pushed
+// to the feature branch end up in develop before the branch is deleted
+func TestFeatureFinishKeepsCommitsOfOthers(t *testing.T) {
+	env := e2e.SetupTestEnv(t)
+	branch := "feature/" + featureName
+
+	env.ExecuteGitflow("feature", "start", featureName)
+	env.CommitFile("feature.txt", []byte("the work\n"), branch)
+
+	// the local feature branch does not know about this commit
+	env.CommitFileAsColleague("colleague.txt", []byte("more work\n"), branch)
+
+	env.ExecuteGitflow("feature", "finish", featureName)
+
+	content := env.ExecuteGit("show", "develop:colleague.txt")
+	assert.Equal(t, "more work", strings.TrimSpace(content))
+
+	// the colleague's commit is also on the remote develop
+	env.ExecuteGit("fetch", "origin")
+	env.ExecuteGit("show", "origin/develop:colleague.txt")
+
+	env.AssertBranchDoesNotExist(branch)
+	env.AssertBranchDoesNotExist("origin/" + branch)
+}
+
 // TestFeatureWithConfigFile tests the feature workflow with a custom branch prefix
 func TestFeatureWithConfigFile(t *testing.T) {
 	env, configPath := setupCustomBranchTest(t)

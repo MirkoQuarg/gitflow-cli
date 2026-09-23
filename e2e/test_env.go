@@ -231,6 +231,36 @@ func (env *GitTestEnv) CommitFile(name string, content []byte, commitRef string)
 	env.ExecuteGit("push", "-u", "origin", commitRef)
 }
 
+// CommitFileAsColleague commits a file to a branch from a second clone of the
+// remote and pushes it, the way a colleague would. The local repository does
+// not learn about the commit until it fetches.
+func (env *GitTestEnv) CommitFileAsColleague(name string, content []byte, branch string) {
+	env.t.Helper()
+
+	clonePath := filepath.Join(env.t.TempDir(), "colleague")
+
+	colleague := func(args ...string) {
+		env.t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = clonePath
+		output, err := cmd.CombinedOutput()
+		require.NoError(env.t, err, "Git command failed: git %s\nOutput: %s", strings.Join(args, " "), output)
+	}
+
+	cmd := exec.Command("git", "clone", "--branch", branch, env.RemotePath, clonePath)
+	output, err := cmd.CombinedOutput()
+	require.NoError(env.t, err, "Failed to clone remote: %s", output)
+
+	colleague("config", "user.name", "Colleague")
+	colleague("config", "user.email", "noreply@mercedes-benz.com")
+
+	require.NoError(env.t, os.WriteFile(filepath.Join(clonePath, name), content, 0644))
+
+	colleague("add", name)
+	colleague("commit", "-m", fmt.Sprintf("Commit of a colleague on %s branch", branch))
+	colleague("push", "origin", branch)
+}
+
 // WriteWorkingFile writes a file into the working tree without committing or
 // pushing it. Use it when a test needs a commit that stays local.
 func (env *GitTestEnv) WriteWorkingFile(name string, content []byte) {

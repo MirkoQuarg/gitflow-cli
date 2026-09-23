@@ -130,8 +130,15 @@ const (
 	squash         = "--squash"
 	nofastforward  = "--no-ff"
 	fastforwad     = "--ff-only"
+	fastforwardok  = "--ff"
+	norebase       = "--no-rebase"
 	force          = "--force"
+	forcewithlease = "--force-with-lease"
 	hard           = "--hard"
+	mergebase      = "merge-base"
+	isancestor     = "--is-ancestor"
+	verify         = "--verify"
+	quiet          = "--quiet"
 )
 
 // BranchNames maps branch types to their names.

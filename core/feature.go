@@ -177,11 +177,18 @@ func resolveFeatureToFinish(repository Repository, name string) (string, error) 
 }
 
 func featureStart(repository Repository, branchName string) error {
-	// only one branch per feature, and an existing one is never reused
+	// only one branch per feature, and an existing one is never reused - checked
+	// before anything is touched, so a refusal leaves the repository as it was
 	if exists, err := repository.HasRemoteBranch(branchName); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("repository already has a '%v' branch", branchName)
+	}
+
+	if exists, err := repository.HasLocalBranch(branchName); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("repository already has a local '%v' branch", branchName)
 	}
 
 	// checkout development branch
@@ -190,7 +197,7 @@ func featureStart(repository Repository, branchName string) error {
 	}
 
 	// bring it up to date, so the feature does not start from a stale develop
-	if err := repository.PullBranch(Development.String()); err != nil {
+	if err := pullIfPublished(repository, Development.String()); err != nil {
 		return err
 	}
 
@@ -222,13 +229,21 @@ func featureFinish(repository Repository, branchName string) error {
 		return fmt.Errorf("repository does not have a '%v' branch to finish: %v", branchName, err)
 	}
 
+	// take in what others pushed to the feature branch, so the merge below
+	// carries their commits into the development branch as well
+	if onRemote {
+		if err := pullOrAbort(repository, branchName); err != nil {
+			return err
+		}
+	}
+
 	// checkout development branch
 	if err := repository.CheckoutBranch(Development.String()); err != nil {
 		return err
 	}
 
 	// bring it up to date, so the merge happens against the current development branch
-	if err := repository.PullBranch(Development.String()); err != nil {
+	if err := pullIfPublished(repository, Development.String()); err != nil {
 		return err
 	}
 
@@ -257,10 +272,61 @@ func featureFinish(repository Repository, branchName string) error {
 
 	// delete the feature branch remotely
 	if onRemote {
-		if err := pushIfEnabled(func() error { return repository.PushDeletion(branchName) }); err != nil {
+		if err := pushIfEnabled(func() error { return deleteMergedRemoteBranch(repository, branchName) }); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// deleteMergedRemoteBranch deletes a branch on the remote, but only when every
+// commit on it is part of the development branch. Otherwise the deletion
+// would drop commits that exist nowhere else.
+func deleteMergedRemoteBranch(repository Repository, branchName string) error {
+	remoteBranch := Remote + "/" + branchName
+
+	merged, err := repository.IsAncestor(remoteBranch, Development.String())
+	if err != nil {
+		return err
+	}
+
+	if !merged {
+		return fmt.Errorf("'%v' has commits that are not in '%v', so it is not deleted"+
+			" - merge them and delete the branch by hand", remoteBranch, Development)
+	}
+
+	// the lease refuses when someone pushed after the check above
+	return repository.PushDeletionIfUnchanged(branchName)
+}
+
+// pullIfPublished brings the checked out branch up to date with its remote
+// counterpart. A branch that was never pushed has nothing to pull from - for
+// example a development branch created locally with pushing disabled.
+func pullIfPublished(repository Repository, branchName string) error {
+	onRemote, err := repository.HasRemoteBranch(branchName)
+	if err != nil {
+		return err
+	}
+
+	if !onRemote {
+		return nil
+	}
+
+	return pullOrAbort(repository, branchName)
+}
+
+// pullOrAbort pulls the checked out branch and, when the pull fails halfway
+// through a merge, undoes that merge so the branch is left as it was.
+func pullOrAbort(repository Repository, branchName string) error {
+	err := repository.PullBranch(branchName)
+	if err == nil {
+		return nil
+	}
+
+	// the pull may have failed before it started merging, in which case there is
+	// nothing to abort - git's own output in err says which of the two it was
+	_ = repository.AbortMerge()
+
+	return err
 }

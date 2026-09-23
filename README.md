@@ -47,7 +47,9 @@ To start a new feature, pass its name:
 
 Feature start will perform the following steps:
 
-* Pull the `develop` branch, so the feature does not start from a stale state
+* Refuse a feature whose branch already exists, locally or on the remote
+* Pull the `develop` branch, so the feature does not start from a stale state. A `develop` that
+  exists only locally, for example after an earlier run with `--no-push`, is used as it is
 * Create and check out a feature branch from `develop` (e.g., `feature/142-book-a-service-appointment`)
 * Push that branch, and only that branch
 
@@ -62,10 +64,18 @@ Once the feature is ready, finish it with:
    ```
 
 Feature finish will perform the following steps:
+* Pull the feature branch, so commits that others pushed to it are part of the merge
+* Pull the `develop` branch
 * Merge the feature branch into `develop` with a merge commit, so the individual commits of the
   feature stay visible in the history
-* Delete the feature branch locally and on the remote
+* Delete the feature branch locally
 * Push `develop`
+* Delete the feature branch on the remote, but only while every commit on it is in `develop`.
+  If someone pushed to it in the meantime, the branch is kept and the command fails, so the
+  new commits can be merged by hand
+
+Both commands pull with a merge and never rebase, whatever `pull.rebase` or `pull.ff` are set to
+in the git configuration, so the merge commits of finished features stay in `develop`.
 
 Without an argument the feature branch that is currently checked out is finished. Naming it
 explicitly (`gitflow-cli feature finish 142-book-a-service-appointment`) picks a specific one.

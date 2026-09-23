@@ -76,12 +76,22 @@ func syncBranch(repository Repository, branchType Branch) error {
 	}
 
 	if result.Created {
-		if err := repository.CheckoutBranch(createFrom); err != nil {
+		// an earlier run with pushing disabled may have created the branch
+		// locally already - publish that one instead of failing to create it again
+		exists, err := repository.HasLocalBranch(result.ResolvedName)
+		if err != nil {
 			return err
 		}
-		if err := repository.CreateBranch(result.ResolvedName); err != nil {
-			return err
+
+		if !exists {
+			if err := repository.CheckoutBranch(createFrom); err != nil {
+				return err
+			}
+			if err := repository.CreateBranch(result.ResolvedName); err != nil {
+				return err
+			}
 		}
+
 		if err := pushIfEnabled(func() error {
 			return repository.PushChanges(result.ResolvedName)
 		}); err != nil {

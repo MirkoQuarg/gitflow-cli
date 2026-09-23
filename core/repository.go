@@ -51,10 +51,13 @@ type (
 		PushAllChanges() error
 		PushAllTags() error
 		PushDeletion(branchName string) error
+		PushDeletionIfUnchanged(branchName string) error
 		Rollback(cause error) error
 		CompareFiles(sourceBranch, targetBranch, sourceFile, targetFile string) (bool, error)
 		WriteFile(fileName string, fileContent string) error
 		HasRemoteBranch(name string) (bool, error)
+		HasLocalBranch(name string) (bool, error)
+		IsAncestor(ancestor, descendant string) (bool, error)
 	}
 )
 
@@ -83,6 +86,8 @@ type repository struct {
 	pushAll             []string
 	pushTags            []string
 	pushDeletion        []string
+	verifyLocalBranch   []string
+	isAncestor          []string
 	cleanAll            []string
 	resetBranch         []string
 }
@@ -104,7 +109,7 @@ func NewRepository(projectPath, remote string) Repository {
 		switchBranch:      []string{switch_},
 		createBranch:      []string{switch_, create},
 		mergeBranch:       []string{merge},
-		pullBranch:        []string{pull, remote},
+		pullBranch:        []string{pull, norebase, fastforwardok, remote},
 		deleteBranch:      []string{branch, delete},
 		forceDeleteBranch: []string{branch, forcedelete},
 		addFile:           []string{add},
@@ -114,6 +119,8 @@ func NewRepository(projectPath, remote string) Repository {
 		pushAll:           []string{push, all, remote},
 		pushTags:          []string{push, tags, remote},
 		pushDeletion:      []string{push, delete, remote},
+		verifyLocalBranch: []string{revparse, verify, quiet},
+		isAncestor:        []string{mergebase, isancestor},
 		cleanAll:          []string{clean, force, dir, ignored},
 		resetBranch:       []string{reset, hard},
 	}
@@ -549,6 +556,10 @@ func (r *repository) MergeBranch(branchName string, mergeType MergeType) error {
 }
 
 // PullBranch Pull changes in a branch from the remote repository.
+// The pull always merges and never rebases, whatever 'pull.rebase' or
+// 'pull.ff' say: a rebase would flatten the merge commits of finished
+// features, and 'pull.ff=only' would refuse as soon as the local branch has
+// commits of its own.
 func (r *repository) PullBranch(branchName string) error {
 	var err error
 	var pull *exec.Cmd
@@ -769,6 +780,33 @@ func (r *repository) PushDeletion(branchName string) error {
 	return nil
 }
 
+// PushDeletionIfUnchanged Delete a branch on the remote repository, but only
+// while it still points to the commit its remote-tracking branch knows. When
+// someone pushed to it in the meantime, the deletion is refused instead of
+// dropping their commits.
+func (r *repository) PushDeletionIfUnchanged(branchName string) error {
+	var err error
+	var deletion *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(deletion, output, err) }()
+
+	// the lease compares the remote branch with its remote-tracking branch
+	lease := fmt.Sprintf("%v=%v", forcewithlease, branchName)
+
+	// push the branch deletion to the remote repository
+	deletion = exec.Command(Git, push, lease, delete, r.remote, branchName)
+	deletion.Dir = r.projectPath
+
+	// run git command to push the branch deletion
+	if output, err = deletion.CombinedOutput(); err != nil {
+		return fmt.Errorf("git '%v' failed with %v: %s", deletion, err, output)
+	}
+
+	return nil
+}
+
 // Rollback reverts all local changes in the repository and synchronizes with the remote repository.
 func (r *repository) Rollback(cause error) error {
 	var logs []any = make([]any, 0)
@@ -879,6 +917,57 @@ func (r *repository) HasRemoteBranch(name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// HasLocalBranch checks if a specific branch name exists in the local repository.
+func (r *repository) HasLocalBranch(name string) (bool, error) {
+	var err error
+	var check *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(check, output, err) }()
+
+	// the fully qualified reference keeps a tag of the same name out of it
+	check = exec.Command(Git, append(r.verifyLocalBranch, "refs/heads/"+name)...)
+	check.Dir = r.projectPath
+
+	// with --quiet, a missing branch is exit status 1 and nothing else
+	return exitStatusAnswer(check, &output, &err)
+}
+
+// IsAncestor checks if the ancestor commit is contained in the history of the descendant.
+func (r *repository) IsAncestor(ancestor, descendant string) (bool, error) {
+	var err error
+	var check *exec.Cmd
+	var output []byte
+
+	// log human-readable description of the git command
+	defer func() { Log(check, output, err) }()
+
+	check = exec.Command(Git, append(r.isAncestor, ancestor, descendant)...)
+	check.Dir = r.projectPath
+
+	// git answers with exit status 0 for yes and 1 for no
+	return exitStatusAnswer(check, &output, &err)
+}
+
+// exitStatusAnswer runs a git command that answers a yes/no question with its
+// exit status: 0 is yes, 1 is no, and anything else is an error.
+func exitStatusAnswer(command *exec.Cmd, output *[]byte, err *error) (bool, error) {
+	*output, *err = command.CombinedOutput()
+	if *err == nil {
+		return true, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(*err, &exitErr) && exitErr.ExitCode() == 1 {
+		// a "no" is an answer, not a failure worth logging as one
+		*err = nil
+		return false, nil
+	}
+
+	return false, fmt.Errorf("git '%v' failed with %v: %s", command, *err, *output)
 }
 
 // CompareFiles compares the content of a file in two different branches
